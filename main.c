@@ -33,7 +33,7 @@ int main(int argc,char *argv[])
 {
 	uint8_t device_count = 0;
 	struct usb_interface_descriptor alts;
-	struct KEYCODE keycodes[KEYMAX];
+	struct KEYCODE keycodes[KEYMAX] = {0};
 
 	printf("argc = %d \n", argc);
 	usb_init();
@@ -138,11 +138,18 @@ static int read_keychkorder(char *filename, struct KEYCODE *out)
 	while ( fgets(line, CODE_BUFSIZE, fp) != NULL ) {
 		rd_keyno = strtol(line, NULL, 10);
 		printf("%d \n", rd_keyno);
-		out[keyno].number = keycodes[rd_keyno].number;
-		strcpy(out[keyno++].code, keycodes[rd_keyno].code);
+
+		out[keyno].number = keycodes[rd_keyno - 1].number;
+		strcpy(out[keyno].code, keycodes[rd_keyno - 1].code);
+		keyno++;
+	}
+
+	/* Clear remain key */
+	for ( ; keyno < KEYMAX; keyno++) {
+		out[keyno].number = 0;
+		out[keyno].code[0] = 0;
 	}
 	fclose(fp);
-
 	printf("--- Read OK ---\n");
 	return 0;
 }
@@ -177,9 +184,15 @@ static void keyboard_verify(struct usb_device *dev, struct KEYCODE *keycodes)
 	for (keyno = 0; keyno < KEYMAX; keyno++) {
 		line = &keycodes[keyno].code[0];
 
+		/* Skip */
+		if (line[0] == 0)
+			continue;
+
+		printf(" [keyno.%d]\n", keycodes[keyno].number);
+
 		/* Check assigned format  e.g. "00, 00, 00" */
 		if ((strlen(line) >= 10) && (line[2] == ',') && (line[6] == ',')) {
-			printf(" [keyno.%d]\n %s \n", keycodes[keyno].number, line);
+			printf(" %s \n", line);
 
 			while (1) {
 				instr[0] = 0;
@@ -204,21 +217,23 @@ static void keyboard_verify(struct usb_device *dev, struct KEYCODE *keycodes)
 						for (i = 0; i < ep_size; i++) {
 							if (i > 0)
 								sprintf(instr + strlen(instr), ", ");
-							sprintf(instr + strlen(instr), "%02X", buf[i]);
+							sprintf(instr + strlen(instr), "%02X", buf[i] & 0xFF);
 						}
 					}
 					printf(" %s ", instr);
 
 					if (strncmp(instr, line, strlen(line)) == 0) {
-						printf("\e[32m OK!!!\n \e[m");
+						printf("\e[32m OK!!!\n\e[m");
 						count[0]++;
 						break;
 					} else {
-						printf("\e[31m NG!!!\n \e[m");
+						printf("\e[31m NG!!!\n\e[m");
 						count[1]++;
 					}
 				}
 			}
+		} else {
+			printf(" Nocode key, Skip. \n");
 		}
 	}
 
