@@ -12,30 +12,52 @@
 #include <errno.h>
 #include <string.h>
 
-static void keyboard_verify(char *filename, struct usb_device *dev);
-static void keyboard_test(struct usb_device *dev);
-
+#define KEYMAX  (128)
+#define CODE_BUFSIZE (256)
 #define BUFSIZE (256)
 #define IS_KEYBOARD(alts)     (alts.bInterfaceClass == 3) && (alts.bInterfaceSubClass == 1) && (alts.bInterfaceProtocol == 1)
+
+
+struct KEYCODE {
+	uint8_t number;
+	char code[CODE_BUFSIZE];
+};
+
+static void keyboard_verify(struct usb_device *dev, struct KEYCODE *keycodes);
+static void keyboard_test(struct usb_device *dev);
+static int read_keychkorder(char *filename, struct KEYCODE *);
+static int read_keycodes(char *filename, struct KEYCODE *);
+
 
 int main(int argc,char *argv[])
 {
 	uint8_t device_count = 0;
 	struct usb_interface_descriptor alts;
+	struct KEYCODE keycodes[KEYMAX];
 
 	printf("argc = %d \n", argc);
 	usb_init();
 	usb_find_busses();
 	usb_find_devices();
 
+	if (argc > 1) {
+		if (read_keycodes((char *)argv[1], &keycodes[0]) != 0)
+			return -1;
+	}
+
+	if (argc > 2) {
+		if (read_keychkorder((char *)argv[2], &keycodes[0]) != 0)
+			return -1;
+	}
+
 	for (struct usb_bus* bus = usb_get_busses(); bus; bus = bus->next) {
 		for (struct usb_device* dev = bus->devices; dev; dev = dev->next) {
 			device_count++;
 			alts = dev->config[0].interface[0].altsetting[0];
-
+			printf("found device\n");
 			if (IS_KEYBOARD(alts)) {
 				if (argc > 1)
-					keyboard_verify((char *)argv[1], dev);
+					keyboard_verify(dev, &keycodes[0]);
 				else
 					keyboard_test(dev);
 				break;
@@ -49,21 +71,95 @@ int main(int argc,char *argv[])
 	return 0;
 }
 
-static void keyboard_verify(char *filename, struct usb_device *dev)
+static int read_keycodes(char *filename, struct KEYCODE *out)
+{
+	FILE *fp;
+	char line[CODE_BUFSIZE] = {0};
+	int keyno = 0;
+	int i;
+
+	printf("--- Read start [%s] ---\n", filename);
+
+	if (filename == NULL) {
+		printf("File name is NULL\n");
+		return -1;
+	}
+
+	if ((fp = fopen(filename, "r")) == NULL) {
+		printf("File open error, Can't open %s \n", filename);
+		return -1;
+	}
+
+	/* Read all lines of file */
+	while ( fgets(line, CODE_BUFSIZE, fp) != NULL ) {
+		/* Remove return code */
+		for (i = strlen(line) - 1; i > 0; i--) {
+			if ((line[i] == '\r') || (line[i] == '\n'))
+				line[strlen(line) - 1] = 0;
+			else
+				break;
+		}
+		out[keyno].number = keyno + 1;
+		strcpy(out[keyno].code, line);
+		printf(" %s\n", out[keyno].code);
+		keyno++;
+	}
+
+	printf("--- Read OK ---\n");
+	fclose(fp);
+
+	return 0;
+}
+
+static int read_keychkorder(char *filename, struct KEYCODE *out)
+{
+	FILE *fp;
+	char line[CODE_BUFSIZE];
+	struct KEYCODE keycodes[KEYMAX] = {0};
+	int keyno = 0;
+	int rd_keyno = 0;
+
+	printf("--- Read start [%s] --- \n ", filename);
+
+	if (filename == NULL) {
+		printf("File name is NULL\n");
+		return -1;
+	}
+
+	if ((fp = fopen(filename, "r")) == NULL) {
+		printf("File open error, Can't open %s \n", filename);
+		return -1;
+	}
+
+	/* Copy original keycodes */
+	memcpy(keycodes, out, sizeof(keycodes));
+
+	/* Read all lines of file */
+	while ( fgets(line, CODE_BUFSIZE, fp) != NULL ) {
+		rd_keyno = strtol(line, NULL, 10);
+		printf("%d \n", rd_keyno);
+		out[keyno].number = keycodes[rd_keyno].number;
+		strcpy(out[keyno++].code, keycodes[rd_keyno].code);
+	}
+	fclose(fp);
+
+	printf("--- Read OK ---\n");
+	return 0;
+}
+
+static void keyboard_verify(struct usb_device *dev, struct KEYCODE *keycodes)
 {
 	usb_dev_handle *handle;
 	struct usb_interface_descriptor alts = dev->config[0].interface[0].altsetting[0];
 	uint8_t ep = alts.endpoint[0].bEndpointAddress;
 	int ep_size = alts.endpoint[0].wMaxPacketSize;
-	FILE *fp;
-	char line[BUFSIZE];
 	char buf[BUFSIZE];
 	char instr[BUFSIZE];
 	int keyno = 0;
 	ssize_t read_size;
-	int i;
-	int sum;
-	int count[2]; // ok, ng
+	int sum, i;
+	int count[2] = {0}; // ok, ng
+	char *line;
 
 	handle = usb_open(dev);
 
@@ -73,32 +169,17 @@ static void keyboard_verify(char *filename, struct usb_device *dev)
 	/* Dummy read */
 	read_size = usb_interrupt_read(handle, ep, (char *)buf, ep_size, 100);
 
-	if (filename == NULL) {
-		printf("File name is NULL\n");
-		return;
-	}
-
-	if ((fp = fopen(filename, "r")) == NULL) {
-		printf("File open error, Can't open %s \n", filename);
-		return;
-	}
+	printf("--- Verify Start! ---\n");
+	printf("* Press instructed key. * \n");
+	printf("* You can abort verification when press Ctrl + C * \n");
 
 	/* Read all lines of file */
-	while ( fgets(line, BUFSIZE, fp) != NULL ) {
-		keyno++;
-
-		/* Remove return code */
-		for (i = strlen(line) - 1; i > 0; i--) {
-			if ((line[i] == '\r') || (line[i] == '\n'))
-				line[strlen(line) - 1] = 0;
-			else
-				break;
-		}
+	for (keyno = 0; keyno < KEYMAX; keyno++) {
+		line = &keycodes[keyno].code[0];
 
 		/* Check assigned format  e.g. "00, 00, 00" */
 		if ((strlen(line) >= 10) && (line[2] == ',') && (line[6] == ',')) {
-			printf("%s line \n", line);
-			printf("Enter keyno.%d  expect:%s \n", keyno, line);
+			printf(" [keyno.%d]\n %s \n", keycodes[keyno].number, line);
 
 			while (1) {
 				instr[0] = 0;
@@ -126,14 +207,14 @@ static void keyboard_verify(char *filename, struct usb_device *dev)
 							sprintf(instr + strlen(instr), "%02X", buf[i]);
 						}
 					}
-					printf("instr: %s ", instr);
+					printf(" %s ", instr);
 
 					if (strncmp(instr, line, strlen(line)) == 0) {
-						printf("OK!!!\n");
-						count[0]++
+						printf("\e[32m OK!!!\n \e[m");
+						count[0]++;
 						break;
 					} else {
-						printf("NG!!!\n");
+						printf("\e[31m NG!!!\n \e[m");
 						count[1]++;
 					}
 				}
@@ -141,12 +222,12 @@ static void keyboard_verify(char *filename, struct usb_device *dev)
 		}
 	}
 
-	fclose(fp);
 	usb_resetep(handle, ep);
 	usb_release_interface(handle, alts.bInterfaceNumber);
 	usb_close(handle);
 
-	printf("Keycode test finished. Count OK=%d NG=%d \n", count[0], count[1]);
+	printf("--- Keycode test finished. --- \n");
+	printf(" Count OK=%d NG=%d \n", count[0], count[1]);
 }
 
 
